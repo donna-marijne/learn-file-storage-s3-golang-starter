@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"log"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -58,13 +63,19 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	thumb := thumbnail{
-		data:      data,
-		mediaType: mediaType,
+	fileName, err := getThumbnailFileName(videoID, mediaType)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Cannot save thumbnail", err)
+		return
 	}
-	videoThumbnails[videoID] = thumb
 
-	thumbnailURL := fmt.Sprintf("http://localhost:%s/api/thumbnails/%s", cfg.port, videoID)
+	_, err = cfg.writeThumbnailToFile(fileName, data)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Cannot save thumbnail", err)
+		return
+	}
+
+	thumbnailURL := fmt.Sprintf("http://localhost:%s/assets/%s", cfg.port, fileName)
 	video.ThumbnailURL = &thumbnailURL
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
@@ -73,4 +84,36 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 
 	respondWithJSON(w, http.StatusOK, video)
+}
+
+func getThumbnailFileName(videoID uuid.UUID, mediaType string) (string, error) {
+	exts, err := mime.ExtensionsByType(mediaType)
+	if err != nil {
+		return "", err
+	}
+	if len(exts) == 0 {
+		return "", fmt.Errorf("unsupported content type: %s", mediaType)
+	}
+
+	fileName := fmt.Sprintf("%s%s", videoID, exts[0])
+
+	return fileName, nil
+}
+
+func (cfg *apiConfig) writeThumbnailToFile(fileName string, data []byte) (string, error) {
+	filePath := filepath.Join(cfg.assetsRoot, fileName)
+	file, err := os.Create(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create a file at '%s': %v", filePath, err)
+	}
+
+	reader := bytes.NewReader(data)
+	written, err := io.Copy(file, reader)
+	if err != nil {
+		return "", fmt.Errorf("failed to write to a file at '%s': %v", filePath, err)
+	}
+
+	log.Printf("Wrote %d bytes to '%s'", written, filePath)
+
+	return filePath, nil
 }
