@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -104,7 +106,15 @@ func getThumbnailFileName(videoID uuid.UUID, mediaType string) (string, error) {
 		return "", fmt.Errorf("unsupported content type: %s", mediaType)
 	}
 
-	fileName := fmt.Sprintf("%s%s", videoID, exts[0])
+	randomBytes := make([]byte, 32)
+	_, err = rand.Read(randomBytes)
+	if err != nil {
+		return "", fmt.Errorf("RNG error: %v", err)
+	}
+
+	fileNameWithoutExt := base64.RawURLEncoding.EncodeToString(randomBytes)
+
+	fileName := fmt.Sprintf("%s%s", fileNameWithoutExt, exts[0])
 
 	return fileName, nil
 }
