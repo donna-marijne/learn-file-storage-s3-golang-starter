@@ -16,8 +16,8 @@ import (
 )
 
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
-	// const maxBytes = 1 << 30
-	// reader := http.MaxBytesReader(w, r.Body, maxBytes)
+	const maxBytes = 1 << 30
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 
 	videoIDString := r.PathValue("videoID")
 	videoID, err := uuid.Parse(videoIDString)
@@ -79,15 +79,37 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	log.Printf("Wrote %d bytes to '%s'", bytesWritten, tempFile.Name())
+	log.Printf("Wrote %d bytes to %s", bytesWritten, tempFile.Name())
 
-	_, err = tempFile.Seek(0, io.SeekStart)
+	// _, err = tempFile.Seek(0, io.SeekStart)
+	// if err != nil {
+	// 	respondWithError(w, http.StatusInternalServerError, "Failed to seek", err)
+	// 	return
+	// }
+
+	fastStartFilePath, err := processVideoForFastStart(tempFile.Name())
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Failed to seek", err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to process video for fast start", err)
+		return
+	}
+	defer os.Remove(fastStartFilePath)
+
+	log.Printf("Processed %s to %s", tempFile.Name(), fastStartFilePath)
+
+	fastStartFile, err := os.Open(fastStartFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to open the fast start video file", err)
+		return
+	}
+	defer fastStartFile.Close()
+
+	aspectRatio, err := getVideoAspectRatio(fastStartFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to probe the video", err)
 		return
 	}
 
-	fileKey, err := getVideoFileKey()
+	fileKey, err := getVideoFileKey(aspectRatio)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Failed to generate an object key", err)
 		return
@@ -96,7 +118,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	putObjectParams := s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &fileKey,
-		Body:        tempFile,
+		Body:        fastStartFile,
 		ContentType: &mediaType,
 	}
 	_, err = cfg.s3Client.PutObject(r.Context(), &putObjectParams)
@@ -113,10 +135,22 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	log.Printf("Uploaded %s to %s", fastStartFilePath, videoURL)
+
 	respondWithJSON(w, http.StatusOK, video)
 }
 
-func getVideoFileKey() (string, error) {
+func getVideoFileKey(aspectRatio string) (string, error) {
+	var prefix string
+	switch aspectRatio {
+	case "16:9":
+		prefix = "landscape"
+	case "9:16":
+		prefix = "portrait"
+	default:
+		prefix = "other"
+	}
+
 	randomBytes := make([]byte, 32)
 	_, err := rand.Read(randomBytes)
 	if err != nil {
@@ -125,7 +159,7 @@ func getVideoFileKey() (string, error) {
 
 	fileNameWithoutExt := base64.RawURLEncoding.EncodeToString(randomBytes)
 
-	fileName := fmt.Sprintf("%s.mp4", fileNameWithoutExt)
+	fileName := fmt.Sprintf("%s/%s.mp4", prefix, fileNameWithoutExt)
 
 	return fileName, nil
 }
